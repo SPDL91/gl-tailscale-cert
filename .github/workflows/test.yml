@@ -33,7 +33,7 @@ jobs:
 
       - name: Build review IPK and run core tests
         run: |
-          sh pkg/build.sh 0.1.7
+          sh pkg/build.sh 0.1.8
           sh tests/run.sh
 
       - name: BusyBox ash tests
@@ -58,6 +58,6 @@ jobs:
       - name: Build and verify OpenWrt 25.12 APK
         run: |
           docker run --rm -v "$PWD:/repo" -w /repo alpine:edge \
-            sh pkg/build-apk.sh build/out/gl-tailscale-cert_0.1.7_all.ipk build/out
+            sh pkg/build-apk.sh build/out/gl-tailscale-cert_0.1.8_all.ipk build/out
           docker run --rm -v "$PWD:/repo:ro" -w /repo alpine:edge \
-            apk verify --allow-untrusted build/out/gl-tailscale-cert-0.1.7.apk
+            apk verify --allow-untrusted build/out/gl-tailscale-cert-0.1.8.apk

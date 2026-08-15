@@ -41,13 +41,13 @@ To install by hand instead, download the artifact and its `.sha256` sidecar from
 the router, and verify before installing:
 
 ```sh
-sha256sum -c gl-tailscale-cert_0.1.7_all.ipk.sha256
+sha256sum -c gl-tailscale-cert_0.1.8_all.ipk.sha256
 
 # OpenWrt 24.10 and older
-opkg install /tmp/gl-tailscale-cert_0.1.7_all.ipk
+opkg install /tmp/gl-tailscale-cert_0.1.8_all.ipk
 
 # OpenWrt 25.12 and newer
-apk add --allow-untrusted /tmp/gl-tailscale-cert-0.1.7.apk
+apk add --allow-untrusted /tmp/gl-tailscale-cert-0.1.8.apk
 ```
 
 ## Enable
@@ -121,8 +121,8 @@ with the SDK matching the target firmware.
 For review builds without an SDK:
 
 ```sh
-sh pkg/build.sh 0.1.7
-sh pkg/build-apk.sh build/out/gl-tailscale-cert_0.1.7_all.ipk build/out
+sh pkg/build.sh 0.1.8
+sh pkg/build-apk.sh build/out/gl-tailscale-cert_0.1.8_all.ipk build/out
 ```
 
 The second command requires apk-tools v3. Use an SDK build for distribution.

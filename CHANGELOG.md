@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.8 - 2026-08-15
+
+- Fix a v0.1.7 packaging defect that made installation fail on the router. The lifecycle `postinst` and `prerm` shipped with CRLF line endings, so BusyBox looked for an interpreter named `sh\r`, and `opkg install` reported "not found" and exit 127 for a script that existed and was executable. Found on a GL-MT3000 during live acceptance.
+- Pin `src/lifecycle/*`, `src/config/*`, and `src/nginx/*` to LF. Only some extensionless packaged files carried an explicit line-ending rule, so the rest inherited `text=auto` and picked up CRLF from a Windows checkout.
+- Reject a carriage return anywhere in any packaged file, rather than only in the hotplug hook, and check the shebang of every packaged script.
+
 ## 0.1.7 - 2026-08-15
 
 - Fix the file watcher missing a certificate overwrite that lands while its one-shot check finishes. The daemon sampled the four files after the check completed, so an overwrite arriving in that window became the baseline and the watcher waited a full 12-hour interval instead of repairing within 30 seconds.

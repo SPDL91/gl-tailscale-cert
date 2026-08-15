@@ -8,7 +8,7 @@ import tarfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-IPK = ROOT / "build/out/gl-tailscale-cert_0.1.7_all.ipk"
+IPK = ROOT / "build/out/gl-tailscale-cert_0.1.8_all.ipk"
 
 
 def nested_tar(outer, name):
@@ -61,7 +61,7 @@ class PackageTests(unittest.TestCase):
     def test_control_metadata_and_hooks(self):
         control_text = self.control.extractfile("./control").read().decode()
         self.assertIn("Package: gl-tailscale-cert", control_text)
-        self.assertIn("Version: 0.1.7", control_text)
+        self.assertIn("Version: 0.1.8", control_text)
         self.assertIn("ca-bundle", control_text)
         self.assertIn("Architecture: all", control_text)
         self.assertIn("License: GPL-3.0-only", control_text)
@@ -105,11 +105,38 @@ class PackageTests(unittest.TestCase):
         self.assertIn('"$NGINX" -s reload', postinst)
         self.assertIn('"$NGINX" -s reload', prerm)
 
-    def test_hotplug_hook_is_busybox_executable(self):
-        hook_bytes = self.data.extractfile(self.members["etc/hotplug.d/iface/90-gl-tailscale-cert"]).read()
-        self.assertTrue(hook_bytes.startswith(b"#!/bin/sh\n"))
-        self.assertNotIn(b"\r", hook_bytes)
-        hook = hook_bytes.decode()
+    def test_no_packaged_file_carries_carriage_returns(self):
+        """A CR anywhere in a packaged text file is a shipping defect.
+
+        BusyBox resolves `#!/bin/sh\\r` as an interpreter named `sh\\r`, so the
+        script fails with "not found" and exit 127 even though it exists and is
+        executable. A previous release shipped that way because this check
+        covered only the hotplug hook while `.gitattributes` left other
+        extensionless files on `text=auto`.
+        """
+        for name, member in self.members.items():
+            if name.endswith(".gz"):
+                continue
+            payload = self.data.extractfile(member).read()
+            self.assertNotIn(b"\r", payload, f"{name} contains a carriage return")
+
+    def test_packaged_scripts_start_with_a_busybox_shebang(self):
+        # The init script legitimately dispatches through rc.common, so match the
+        # interpreter rather than the whole line, and require the line to end
+        # cleanly: a trailing CR here is what BusyBox reports as "not found".
+        for name in (
+            "etc/init.d/gl-tailscale-cert",
+            "etc/hotplug.d/iface/90-gl-tailscale-cert",
+            "usr/bin/gl-tailscale-cert",
+            "usr/libexec/gl-tailscale-cert/postinst",
+            "usr/libexec/gl-tailscale-cert/prerm",
+        ):
+            first_line = self.data.extractfile(self.members[name]).read().split(b"\n", 1)[0]
+            self.assertTrue(first_line.startswith(b"#!/bin/sh"), f"{name}: {first_line!r}")
+            self.assertFalse(first_line.endswith(b"\r"), f"{name} shebang ends with CR")
+
+    def test_hotplug_hook_stays_in_scope(self):
+        hook = self.data.extractfile(self.members["etc/hotplug.d/iface/90-gl-tailscale-cert"]).read().decode()
         for forbidden in ("firewall", "ip route", "ip rule", "ubus call network"):
             self.assertNotIn(forbidden, hook)
 
@@ -135,7 +162,7 @@ class PackageTests(unittest.TestCase):
         ):
             payload = self.data.extractfile(self.members[name]).read()
             self.assertNotIn(b"{{VERSION}}", payload, name)
-            self.assertIn(b"0.1.7", payload, name)
+            self.assertIn(b"0.1.8", payload, name)
 
 
 if __name__ == "__main__":
