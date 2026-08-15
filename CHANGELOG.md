@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Report the actual feature state after installing. The installer always said the feature starts disabled, which misread an install over a preserved `enabled='1'` config, such as after a firmware upgrade.
+
 ## 0.1.8 - 2026-08-15
 
 - Fix a v0.1.7 packaging defect that made installation fail on the router. The lifecycle `postinst` and `prerm` shipped with CRLF line endings, so BusyBox looked for an interpreter named `sh\r`, and `opkg install` reported "not found" and exit 127 for a script that existed and was executable. Found on a GL-MT3000 during live acceptance.

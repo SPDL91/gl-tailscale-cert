@@ -99,8 +99,22 @@ case "$MANAGER" in
 	apk) apk add --allow-untrusted "$WORK/$FILE" ;;
 esac
 
-cat <<'EOF'
+# An install over a preserved config keeps whatever the setting already was, so
+# report the actual state rather than assuming a fresh install.
+enabled=0
+[ "$(uci -q get ts_cert.main.enabled 2>/dev/null)" = "1" ] && enabled=1
 
+printf '\n'
+if [ "$enabled" = "1" ]; then
+	cat <<'EOF'
+Installed. The certificate feature was already enabled and stays enabled.
+
+Check progress with:
+
+  gl-tailscale-cert --status
+EOF
+else
+	cat <<'EOF'
 Installed. The certificate feature starts disabled.
 
 Enable it in the GL.iNet Admin Panel on the Tailscale page, or from the shell:
@@ -112,6 +126,10 @@ Enable it in the GL.iNet Admin Panel on the Tailscale page, or from the shell:
 Check progress with:
 
   gl-tailscale-cert --status
+EOF
+fi
+
+cat <<'EOF'
 
 MagicDNS and HTTPS Certificates must be enabled in the Tailscale admin console.
 EOF

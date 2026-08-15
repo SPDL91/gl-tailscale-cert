@@ -4,6 +4,30 @@ Do not run this checklist without explicit approval for the specific router and 
 
 ## Recorded v0.1.8 results
 
+### GL-MT3000, firmware 4.9.1-op25 (OpenWrt 25.12)
+
+OpenWrt 25.12.5, kernel 6.12.94, apk-tools 3.0.5. The device reached this state
+by a firmware upgrade from OpenWrt 21.02 with **Keep Settings**, which also
+exercises sysupgrade persistence and package-metadata loss.
+
+- Every path in the keep list survived the upgrade: worker, procd script and its
+  `S99` link, UCI config, generated nginx adapter, RPC, and the keep list
+  itself. All four certificate files stayed byte-identical.
+- The package kept working with no package-manager record of it. The daemon ran,
+  reported `valid`, and `nginx -t` passed, because apk did not inherit the opkg
+  database.
+- The installer selected the `.apk` artifact, verified its checksum, and
+  installed with apk. The post-install script ran without error, apk then listed
+  the package, and the preserved `enabled=1` was not overwritten.
+- A controlled invalid replacement of the nginx pair repaired in 24 seconds from
+  the valid uHTTPd pair, with no certificate request. Modes stayed `0644` and
+  `0600`.
+- With `gl-tailscale-fix` present, `/gl_home.html` carried each script exactly
+  once, ts-fix first, and `--status --json` returned a well-formed object.
+
+This covers the apk-tools and sysupgrade items that earlier releases could not
+verify.
+
 ### GL-MT6000, firmware 4.9.1
 
 OpenWrt 21.02-SNAPSHOT, Tailscale 1.102.2, with `gl-tailscale-fix` 1.0.21 and
@@ -62,10 +86,9 @@ v0.1.7 failed acceptance on the MT3000 and was withdrawn: its lifecycle scripts
 shipped with CRLF endings, so `opkg install` reported the postinst as "not
 found" with exit 127. See the 0.1.8 entry in `CHANGELOG.md`.
 
-Sysupgrade persistence and the apk-tools path remain unverified for v0.1.8.
-Sysupgrade needs a firmware flash that is not worth performing for this package
-alone, and apk-tools needs an OpenWrt 25.12 device. Reboot and package-order
-checks ran on the MT3000 only.
+Reboot and package-order checks ran on the MT3000 under OpenWrt 21.02. The
+sysupgrade and apk-tools items were covered by the 25.12 upgrade recorded above.
+Package-order checks have not been repeated under apk.
 
 ## Recorded v0.1.6 results
 
