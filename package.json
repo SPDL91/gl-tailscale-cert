@@ -1,0 +1,11 @@
+{
+  "name": "gl-tailscale-cert-tests",
+  "private": true,
+  "version": "0.1.6",
+  "scripts": {
+    "test:webui": "node tests/test-webui.js"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}

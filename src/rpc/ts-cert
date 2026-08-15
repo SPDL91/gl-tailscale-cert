@@ -1,0 +1,105 @@
+--[[
+    @object-name: ts-cert
+    @object-desc: Tailscale HTTPS certificate management for GL.iNet
+    SPDX-License-Identifier: GPL-3.0-only
+--]]
+
+local uci = require "uci"
+local cjson = require "cjson"
+local fs = require "oui.fs"
+
+local M = {}
+local CONFIG = "ts_cert"
+local SECTION = "main"
+local WORKER = "/usr/bin/gl-tailscale-cert"
+local SERVICE = "/etc/init.d/gl-tailscale-cert"
+
+local function worker_status()
+    local pipe = io.popen(WORKER .. " --status --json 2>/dev/null")
+    if not pipe then
+        return { state = "unknown", message = "Status is unavailable" }
+    end
+    local payload = pipe:read("*a") or ""
+    pipe:close()
+    local ok, decoded = pcall(cjson.decode, payload)
+    if ok and type(decoded) == "table" then
+        return decoded
+    end
+    return { state = "unknown", message = "Status is unavailable" }
+end
+
+local function restart_service()
+    if not fs.access(SERVICE) then
+        return false
+    end
+    local ok, reason, code = os.execute(SERVICE .. " restart >/dev/null 2>&1")
+    if type(ok) == "number" then
+        return ok == 0
+    end
+    return ok == true and (code == nil or code == 0)
+end
+
+--[[
+    @method-type: call
+    @method-name: get_config
+    @method-desc: Get plugin configuration and certificate status
+--]]
+function M.get_config()
+    local c = uci.cursor()
+    local result = worker_status()
+    result.enabled = c:get(CONFIG, SECTION, "enabled") == "1"
+    result.check_interval = tonumber(c:get(CONFIG, SECTION, "check_interval")) or 43200
+    result.min_validity_hours = tonumber(c:get(CONFIG, SECTION, "min_validity_hours")) or 1440
+    return result
+end
+
+--[[
+    @method-type: call
+    @method-name: set_config
+    @method-desc: Enable or disable certificate management and restart its service
+    @in bool enabled
+--]]
+function M.set_config(params)
+    if type(params) ~= "table" or type(params.enabled) ~= "boolean" then
+        return { err_code = -1, err_msg = "Choose enabled or disabled" }
+    end
+
+    local c = uci.cursor()
+    if not c:set(CONFIG, SECTION, "enabled", params.enabled and "1" or "0") then
+        return { err_code = -2, err_msg = "Couldn't save the setting" }
+    end
+    if not c:commit(CONFIG) then
+        return { err_code = -3, err_msg = "Couldn't save the setting" }
+    end
+    fs.sync()
+
+    if not restart_service() then
+        return { err_code = -4, err_msg = "Setting saved, but the certificate service couldn't restart" }
+    end
+    return M.get_config()
+end
+
+--[[
+    @method-type: call
+    @method-name: renew_now
+    @method-desc: Start a user-requested certificate renewal in the background
+--]]
+function M.renew_now()
+    local c = uci.cursor()
+    if c:get(CONFIG, SECTION, "enabled") ~= "1" then
+        return { err_code = -1, err_msg = "Enable certificate management first" }
+    end
+    os.execute("(" .. WORKER .. " --once --force >/dev/null 2>&1) &")
+    return { status = "started" }
+end
+
+--[[
+    @method-type: call
+    @method-name: get_status
+    @method-desc: Get current background operation status
+--]]
+function M.get_status()
+    return worker_status()
+end
+
+return M

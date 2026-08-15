@@ -1,0 +1,14 @@
+Package: gl-tailscale-cert
+Version: {{VERSION}}
+Architecture: all
+Maintainer: SPDL91 and contributors <https://github.com/SPDL91/gl-tailscale-cert>
+Section: net
+Priority: optional
+License: GPL-3.0-only
+Depends: jsonfilter, uci, openssl-util, ca-bundle
+Homepage: https://github.com/SPDL91/gl-tailscale-cert
+Description: Opt-in Tailscale HTTPS certificates for GL.iNet web interfaces
+ Discovers the device ts.net name, obtains and validates its Tailscale
+ certificate, installs it for GL.iNet nginx and LuCI uHTTPd with rollback,
+ repairs it after boot, LAN settings changes, or sysupgrade, and adds an
+ independent GL WebUI panel.

@@ -1,0 +1,58 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-only
+
+[ -n "${IPKG_INSTROOT:-}" ] && exit 0
+
+ROOT="${GL_TAILSCALE_CERT_ROOT:-}"
+CONFIG="$ROOT/etc/config/ts_cert"
+DEFAULT="$ROOT/usr/share/gl-tailscale-cert/defaults/ts_cert"
+SAVED="$ROOT/tmp/gl-tailscale-cert.config.saved"
+ACTIVE_NGINX="$ROOT/etc/nginx/gl-conf.d/ts-cert.conf"
+NGINX_TEMPLATE="$ROOT/usr/share/gl-tailscale-cert/nginx/ts-cert.conf"
+NGINX="$ROOT/usr/sbin/nginx"
+INIT_DIR="$ROOT/etc/init.d"
+
+if [ -f "$SAVED" ]; then
+	mv -f "$SAVED" "$CONFIG"
+elif [ ! -f "$CONFIG" ] && [ -f "$DEFAULT" ]; then
+	cp "$DEFAULT" "$CONFIG"
+fi
+chmod 0600 "$CONFIG" 2>/dev/null
+
+nginx_changed=0
+old_nginx="$ROOT/tmp/gl-tailscale-cert.nginx.saved.$$"
+if [ -f "$ACTIVE_NGINX" ]; then
+	cp -p "$ACTIVE_NGINX" "$old_nginx" 2>/dev/null
+fi
+
+if [ -f "$NGINX_TEMPLATE" ]; then
+	new_nginx="$ACTIVE_NGINX.new.$$"
+	if cp "$NGINX_TEMPLATE" "$new_nginx" && chmod 0644 "$new_nginx" && mv -f "$new_nginx" "$ACTIVE_NGINX"; then
+		nginx_changed=1
+	else
+		rm -f "$new_nginx"
+	fi
+fi
+
+if [ "$nginx_changed" = "1" ] && [ -x "$NGINX" ]; then
+	if "$NGINX" -t >/dev/null 2>&1; then
+		"$NGINX" -s reload >/dev/null 2>&1 || \
+			logger -t gl-tailscale-cert -p daemon.warn "nginx config is valid but reload failed"
+	else
+		if [ -f "$old_nginx" ]; then
+			mv -f "$old_nginx" "$ACTIVE_NGINX"
+		else
+			rm -f "$ACTIVE_NGINX"
+		fi
+		"$NGINX" -t >/dev/null 2>&1 && "$NGINX" -s reload >/dev/null 2>&1
+		logger -t gl-tailscale-cert -p daemon.err "WebUI adapter disabled because nginx validation failed"
+	fi
+fi
+rm -f "$old_nginx"
+
+if [ -x "$INIT_DIR/gl-tailscale-cert" ]; then
+	"$INIT_DIR/gl-tailscale-cert" enable >/dev/null 2>&1
+	"$INIT_DIR/gl-tailscale-cert" restart >/dev/null 2>&1
+fi
+
+exit 0

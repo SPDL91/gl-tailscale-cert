@@ -1,0 +1,14 @@
+* text=auto
+*.sh text eol=lf
+*.lua text eol=lf
+*.js text eol=lf
+*.py text eol=lf
+Makefile text eol=lf
+pkg/control text eol=lf
+pkg/postinst text eol=lf
+pkg/prerm text eol=lf
+src/init.d/* text eol=lf
+src/hotplug/iface/* text eol=lf
+src/scripts/* text eol=lf
+src/rpc/* text eol=lf
+src/upgrade/keep.d/* text eol=lf

@@ -1,0 +1,4 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-only
+[ -x /usr/libexec/gl-tailscale-cert/postinst ] || exit 0
+exec /usr/libexec/gl-tailscale-cert/postinst "$@"

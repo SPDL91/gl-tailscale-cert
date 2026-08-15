@@ -1,0 +1,33 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-only
+
+[ -n "${IPKG_INSTROOT:-}" ] && exit 0
+
+ROOT="${GL_TAILSCALE_CERT_ROOT:-}"
+CONFIG="$ROOT/etc/config/ts_cert"
+SAVED="$ROOT/tmp/gl-tailscale-cert.config.saved"
+ACTIVE_NGINX="$ROOT/etc/nginx/gl-conf.d/ts-cert.conf"
+NGINX="$ROOT/usr/sbin/nginx"
+INIT_DIR="$ROOT/etc/init.d"
+
+cp -p "$CONFIG" "$SAVED" 2>/dev/null
+
+# opkg sets PKG_UPGRADE for normal upgrades. The installed files and service
+# remain in place until the new package takes ownership.
+[ "${PKG_UPGRADE:-0}" = "1" ] && exit 0
+
+if [ -x "$INIT_DIR/gl-tailscale-cert" ]; then
+	"$INIT_DIR/gl-tailscale-cert" stop >/dev/null 2>&1
+	"$INIT_DIR/gl-tailscale-cert" disable >/dev/null 2>&1
+fi
+
+rm -f "$ACTIVE_NGINX"
+if [ -x "$NGINX" ] && "$NGINX" -t >/dev/null 2>&1; then
+	"$NGINX" -s reload >/dev/null 2>&1 || true
+fi
+
+rm -f "$CONFIG" "$ROOT/tmp/gl-tailscale-cert.status"
+rmdir "$ROOT/tmp/gl-tailscale-cert.lock" 2>/dev/null || true
+
+# Deliberately leave the last valid nginx and uHTTPd certificate/key files.
+exit 0

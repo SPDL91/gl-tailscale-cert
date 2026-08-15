@@ -1,0 +1,63 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install shell and browser test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          npm install
+          npx playwright install --with-deps chromium
+
+      - name: Shell audit
+        run: >-
+          shellcheck -s sh -e SC1091
+          src/scripts/gl-tailscale-cert
+          src/hotplug/iface/90-gl-tailscale-cert
+          src/init.d/gl-tailscale-cert
+          src/lifecycle/postinst src/lifecycle/prerm
+          pkg/postinst pkg/prerm pkg/build.sh pkg/build-apk.sh install.sh
+          tests/run.sh tests/test-backend.sh tests/test-hotplug.sh
+          tests/test-lifecycle.sh tests/test-openresty.sh
+
+      - name: Build review IPK and run core tests
+        run: |
+          sh pkg/build.sh 0.1.7
+          sh tests/run.sh
+
+      - name: BusyBox ash tests
+        run: >-
+          docker run --rm --entrypoint /bin/ash
+          -v "$PWD:/repo:ro" alpine:edge
+          -c 'apk add --no-cache openssl >/dev/null && cd /repo &&
+          /bin/ash -n src/scripts/gl-tailscale-cert &&
+          /bin/ash -n src/hotplug/iface/90-gl-tailscale-cert &&
+          /bin/ash tests/test-backend.sh && /bin/ash tests/test-hotplug.sh &&
+          /bin/ash tests/test-lifecycle.sh'
+
+      - name: OpenResty coexistence tests
+        run: >-
+          docker run --rm -v "$PWD:/repo:ro"
+          openresty/openresty:1.27.1.2-3-alpine-fat
+          sh /repo/tests/test-openresty.sh
+
+      - name: Headless WebUI tests
+        run: npm run test:webui
+
+      - name: Build and verify OpenWrt 25.12 APK
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo alpine:edge \
+            sh pkg/build-apk.sh build/out/gl-tailscale-cert_0.1.7_all.ipk build/out
+          docker run --rm -v "$PWD:/repo:ro" -w /repo alpine:edge \
+            apk verify --allow-untrusted build/out/gl-tailscale-cert-0.1.7.apk

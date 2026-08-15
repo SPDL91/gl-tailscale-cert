@@ -1,0 +1,27 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-only
+# Repair GL-managed web certificates after GL applies LAN settings.
+
+[ "${INTERFACE:-}" = "lan" ] || exit 0
+case "${ACTION:-}" in
+	ifup|ifupdate) ;;
+	*) exit 0 ;;
+esac
+
+TEST_ROOT="${GL_TAILSCALE_CERT_ROOT:-}"
+WORKER="${GL_TAILSCALE_CERT_WORKER:-${TEST_ROOT}/usr/bin/gl-tailscale-cert}"
+TMP_BASE="${GL_TAILSCALE_CERT_TMPDIR:-${TEST_ROOT}/tmp}"
+DELAY="${GL_TAILSCALE_CERT_HOTPLUG_DELAY:-5}"
+PENDING="$TMP_BASE/gl-tailscale-cert.hotplug-pending"
+
+[ -x "$WORKER" ] || exit 0
+mkdir -p "$TMP_BASE" 2>/dev/null || exit 0
+mkdir "$PENDING" 2>/dev/null || exit 0
+
+(
+	trap 'rmdir "$PENDING" 2>/dev/null' EXIT HUP INT TERM
+	sleep "$DELAY"
+	"$WORKER" --once </dev/null >/dev/null 2>&1 || true
+) </dev/null >/dev/null 2>&1 &
+
+exit 0

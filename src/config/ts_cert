@@ -1,0 +1,7 @@
+config settings 'main'
+	option enabled '0'
+	option check_interval '43200'
+	option watch_interval '30'
+	option min_validity_hours '1440'
+	option readiness_timeout '120'
+	option request_timeout '180'

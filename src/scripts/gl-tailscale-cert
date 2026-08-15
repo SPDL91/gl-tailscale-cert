@@ -1,0 +1,663 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-only
+# Certificate lifecycle worker for GL.iNet firmware.
+
+umask 077
+
+VERSION='{{VERSION}}'
+TEST_ROOT="${GL_TAILSCALE_CERT_ROOT:-}"
+TMP_BASE="${GL_TAILSCALE_CERT_TMPDIR:-${TEST_ROOT}/tmp}"
+STATUS_FILE="$TMP_BASE/gl-tailscale-cert.status"
+LOCK_DIR="$TMP_BASE/gl-tailscale-cert.lock"
+WATCH_INTERVAL_OVERRIDE="${GL_TAILSCALE_CERT_WATCH_INTERVAL:-}"
+CONFIG_NAME=ts_cert
+CONFIG_SECTION=main
+
+NGINX_CERT="${TEST_ROOT}/etc/nginx/nginx.cer"
+NGINX_KEY="${TEST_ROOT}/etc/nginx/nginx.key"
+UHTTPD_CERT="${TEST_ROOT}/etc/uhttpd.crt"
+UHTTPD_KEY="${TEST_ROOT}/etc/uhttpd.key"
+
+if [ -n "$TEST_ROOT" ]; then
+	TAILSCALE="${GL_TAILSCALE_CERT_TAILSCALE:-$TEST_ROOT/usr/sbin/tailscale}"
+	OPENSSL="${GL_TAILSCALE_CERT_OPENSSL:-$TEST_ROOT/usr/bin/openssl}"
+	JSONFILTER="${GL_TAILSCALE_CERT_JSONFILTER:-$TEST_ROOT/usr/bin/jsonfilter}"
+	UCI="${GL_TAILSCALE_CERT_UCI:-$TEST_ROOT/sbin/uci}"
+	NGINX="${GL_TAILSCALE_CERT_NGINX:-$TEST_ROOT/usr/sbin/nginx}"
+	INIT_DIR="${GL_TAILSCALE_CERT_INIT_DIR:-$TEST_ROOT/etc/init.d}"
+else
+	TAILSCALE="${GL_TAILSCALE_CERT_TAILSCALE:-/usr/sbin/tailscale}"
+	OPENSSL="${GL_TAILSCALE_CERT_OPENSSL:-/usr/bin/openssl}"
+	JSONFILTER="${GL_TAILSCALE_CERT_JSONFILTER:-/usr/bin/jsonfilter}"
+	UCI="${GL_TAILSCALE_CERT_UCI:-/sbin/uci}"
+	NGINX="${GL_TAILSCALE_CERT_NGINX:-/usr/sbin/nginx}"
+	INIT_DIR="${GL_TAILSCALE_CERT_INIT_DIR:-/etc/init.d}"
+fi
+
+CA_BUNDLE="${GL_TAILSCALE_CERT_CA_BUNDLE:-}"
+if [ -z "$CA_BUNDLE" ]; then
+	for candidate in \
+		"${TEST_ROOT}/etc/ssl/certs/ca-certificates.crt" \
+		"${TEST_ROOT}/etc/ssl/cert.pem" \
+		"${TEST_ROOT}/etc/ssl/ca-bundle.pem"; do
+		if [ -s "$candidate" ]; then
+			CA_BUNDLE="$candidate"
+			break
+		fi
+	done
+fi
+
+WORK_DIR=
+STAGED_FILES=
+
+log() {
+	level="$1"
+	shift
+	if command -v logger >/dev/null 2>&1; then
+		logger -t gl-tailscale-cert -p "daemon.$level" "$*"
+	fi
+}
+
+clean_text() {
+	printf '%s' "$1" | tr '\r\n' '  ' | cut -c 1-240
+}
+
+status_value() {
+	key="$1"
+	[ -f "$STATUS_FILE" ] || return 0
+	sed -n "s/^${key}=//p" "$STATUS_FILE" | head -n 1
+}
+
+save_status() {
+	state="$1"
+	message="$(clean_text "$2")"
+	fqdn="$(clean_text "$3")"
+	expiry="$(clean_text "$4")"
+	last_check="$5"
+	last_success="$6"
+	last_renewal="$7"
+	action="$(clean_text "$8")"
+
+	mkdir -p "$TMP_BASE" 2>/dev/null || return 1
+	tmp_status="$STATUS_FILE.$$"
+	{
+		printf 'state=%s\n' "$state"
+		printf 'message=%s\n' "$message"
+		printf 'fqdn=%s\n' "$fqdn"
+		printf 'expiry=%s\n' "$expiry"
+		printf 'last_check=%s\n' "$last_check"
+		printf 'last_success=%s\n' "$last_success"
+		printf 'last_renewal=%s\n' "$last_renewal"
+		printf 'action=%s\n' "$action"
+		printf 'version=%s\n' "$VERSION"
+	} >"$tmp_status" || return 1
+	chmod 600 "$tmp_status" 2>/dev/null
+	mv -f "$tmp_status" "$STATUS_FILE"
+}
+
+json_escape() {
+	printf '%s' "$1" | awk 'BEGIN { ORS="" } {
+		if (NR > 1) printf "\\n";
+		gsub(/\\/, "\\\\"); gsub(/\"/, "\\\""); gsub(/\t/, "\\t"); gsub(/\r/, "\\r");
+		printf "%s", $0
+	}'
+}
+
+uci_get() {
+	option="$1"
+	default="$2"
+	value=$($UCI -q get "$CONFIG_NAME.$CONFIG_SECTION.$option" 2>/dev/null)
+	[ -n "$value" ] && printf '%s\n' "$value" || printf '%s\n' "$default"
+}
+
+positive_number() {
+	case "$1" in
+		''|*[!0-9]*) return 1 ;;
+		0) return 1 ;;
+	esac
+	return 0
+}
+
+now_epoch() {
+	date +%s
+}
+
+file_epoch() {
+	[ -f "$1" ] || return 0
+	stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || true
+}
+
+cleanup() {
+	for staged in $STAGED_FILES; do
+		rm -f "$staged" 2>/dev/null
+	done
+	[ -n "$WORK_DIR" ] && rm -rf "$WORK_DIR" 2>/dev/null
+	rm -f "$LOCK_DIR/pid" 2>/dev/null
+	rmdir "$LOCK_DIR" 2>/dev/null
+}
+
+acquire_lock() {
+	mkdir -p "$TMP_BASE" 2>/dev/null || return 1
+	if mkdir "$LOCK_DIR" 2>/dev/null; then
+		printf '%s\n' "$$" >"$LOCK_DIR/pid"
+		return 0
+	fi
+	lock_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null)
+	case "$lock_pid" in
+		''|*[!0-9]*) lock_pid= ;;
+	esac
+	if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
+		return 1
+	fi
+	# Recover an abandoned lock. A competing process can win the retry safely.
+	rm -f "$LOCK_DIR/pid" 2>/dev/null
+	rmdir "$LOCK_DIR" 2>/dev/null || return 1
+	if mkdir "$LOCK_DIR" 2>/dev/null; then
+		printf '%s\n' "$$" >"$LOCK_DIR/pid"
+		return 0
+	fi
+	return 1
+}
+
+require_tools() {
+	missing=
+	for tool in "$TAILSCALE" "$OPENSSL" "$JSONFILTER" "$UCI"; do
+		[ -x "$tool" ] || missing="$missing $tool"
+	done
+	[ -n "$CA_BUNDLE" ] && [ -s "$CA_BUNDLE" ] || missing="$missing ca-bundle"
+	if [ -n "$missing" ]; then
+		log err "required firmware tool or CA bundle missing:$missing"
+		return 1
+	fi
+	return 0
+}
+
+valid_fqdn() {
+	name="$1"
+	[ ${#name} -le 253 ] || return 1
+	case "$name" in
+		*.ts.net) ;;
+		*) return 1 ;;
+	esac
+	case "$name" in
+		*[!a-z0-9.-]*|.*|*..*|*.) return 1 ;;
+	esac
+	printf '%s\n' "$name" | awk -F. '
+		{
+			for (i = 1; i <= NF; i++) {
+				if (length($i) < 1 || length($i) > 63 || $i ~ /^-/ || $i ~ /-$/) exit 1
+			}
+		}
+	' >/dev/null 2>&1
+}
+
+discover_fqdn() {
+	timeout_seconds="$(uci_get readiness_timeout 120)"
+	positive_number "$timeout_seconds" || timeout_seconds=120
+	[ "$timeout_seconds" -le 600 ] 2>/dev/null || timeout_seconds=120
+	waited=0
+	previous_fqdn=
+	stable_samples=0
+	while [ "$waited" -le "$timeout_seconds" ]; do
+		if "$TAILSCALE" status --json >"$WORK_DIR/status.json" 2>/dev/null; then
+			backend=$($JSONFILTER -i "$WORK_DIR/status.json" -e '@.BackendState' 2>/dev/null)
+			fqdn=$($JSONFILTER -i "$WORK_DIR/status.json" -e '@.Self.DNSName' 2>/dev/null)
+			# Tailscale emits canonical lowercase DNS names. Avoid BusyBox tr
+			# character classes: verified GL firmware treats them literally and
+			# maps the letter "u" in "upper" to the letter "l" in "lower".
+			fqdn=${fqdn%.}
+			if [ "$backend" = "Running" ] && valid_fqdn "$fqdn"; then
+				if [ "$fqdn" = "$previous_fqdn" ]; then
+					stable_samples=$((stable_samples + 1))
+				else
+					previous_fqdn="$fqdn"
+					stable_samples=1
+				fi
+				if [ "$stable_samples" -ge 2 ]; then
+					printf '%s\n' "$fqdn"
+					return 0
+				fi
+			else
+				previous_fqdn=
+				stable_samples=0
+			fi
+		fi
+		[ "$waited" -ge "$timeout_seconds" ] && break
+		sleep 2
+		waited=$((waited + 2))
+	done
+	return 1
+}
+
+cert_expiry() {
+	"$OPENSSL" x509 -in "$1" -noout -enddate 2>/dev/null | sed 's/^notAfter=//'
+}
+
+key_matches_cert() {
+	cert="$1"
+	key="$2"
+	cert_pub="$WORK_DIR/match-cert.pub.$$"
+	cert_der="$WORK_DIR/match-cert.der.$$"
+	key_der="$WORK_DIR/match-key.der.$$"
+	"$OPENSSL" x509 -in "$cert" -pubkey -noout >"$cert_pub" 2>/dev/null || return 1
+	"$OPENSSL" pkey -pubin -in "$cert_pub" -outform DER >"$cert_der" 2>/dev/null || return 1
+	"$OPENSSL" pkey -in "$key" -pubout -outform DER >"$key_der" 2>/dev/null || return 1
+	cmp -s "$cert_der" "$key_der"
+}
+
+trusted_hostname_chain() {
+	cert="$1"
+	fqdn="$2"
+	# tailscale cert writes a fullchain. Supplying that file as -untrusted lets
+	# OpenSSL use its intermediates while anchoring only in the firmware CA
+	# bundle. `openssl x509 -checkhost` is deliberately not used: OpenSSL 1.1.1t
+	# on verified GL firmware exits zero even for a hostname mismatch.
+	"$OPENSSL" verify -verify_hostname "$fqdn" -CAfile "$CA_BUNDLE" \
+		-untrusted "$cert" "$cert" >/dev/null 2>&1
+}
+
+pair_valid() {
+	cert="$1"
+	key="$2"
+	fqdn="$3"
+	valid_for="$4"
+	[ -s "$cert" ] && [ -s "$key" ] || return 1
+	"$OPENSSL" x509 -in "$cert" -noout >/dev/null 2>&1 || return 1
+	"$OPENSSL" pkey -in "$key" -noout -check >/dev/null 2>&1 || return 1
+	"$OPENSSL" x509 -in "$cert" -noout -checkend "$valid_for" >/dev/null 2>&1 || return 1
+	trusted_hostname_chain "$cert" "$fqdn" || return 1
+	key_matches_cert "$cert" "$key"
+}
+
+all_targets_match() {
+	source_cert="$1"
+	source_key="$2"
+	cmp -s "$source_cert" "$NGINX_CERT" 2>/dev/null || return 1
+	cmp -s "$source_key" "$NGINX_KEY" 2>/dev/null || return 1
+	cmp -s "$source_cert" "$UHTTPD_CERT" 2>/dev/null || return 1
+	cmp -s "$source_key" "$UHTTPD_KEY" 2>/dev/null || return 1
+	return 0
+}
+
+service_action() {
+	service="$1"
+	action="$2"
+	[ -x "$INIT_DIR/$service" ] || return 1
+	"$INIT_DIR/$service" "$action" >/dev/null 2>&1
+}
+
+reload_nginx() {
+	# GL firmware's /etc/init.d/nginx has no reload_service implementation;
+	# rc.common therefore maps "reload" to "start". Use nginx's native HUP
+	# path so configuration and certificates change without stopping workers.
+	"$NGINX" -s reload >/dev/null 2>&1
+}
+
+activate_services() {
+	[ -x "$NGINX" ] || return 1
+	"$NGINX" -t >/dev/null 2>&1 || return 1
+	reload_nginx || return 1
+	# GL 4.8.1 on the MT3000 reports a successful uHTTPd reload without
+	# replacing the in-memory TLS certificate. A restart reliably activates
+	# the new pair and only interrupts LuCI's private web listener.
+	service_action uhttpd restart || return 1
+	return 0
+}
+
+backup_target() {
+	target="$1"
+	name="$2"
+	if [ -e "$target" ]; then
+		cp -p "$target" "$WORK_DIR/backup.$name" || return 1
+		printf '1' >"$WORK_DIR/had.$name"
+	else
+		printf '0' >"$WORK_DIR/had.$name"
+	fi
+}
+
+restore_target() {
+	target="$1"
+	name="$2"
+	if [ "$(cat "$WORK_DIR/had.$name" 2>/dev/null)" = "1" ]; then
+		cp -p "$WORK_DIR/backup.$name" "$target" 2>/dev/null || return 1
+	else
+		rm -f "$target" 2>/dev/null || return 1
+	fi
+}
+
+install_pair() {
+	source_cert="$1"
+	source_key="$2"
+	all_targets_match "$source_cert" "$source_key" && return 2
+
+	backup_target "$NGINX_CERT" nginx_cert || return 1
+	backup_target "$NGINX_KEY" nginx_key || return 1
+	backup_target "$UHTTPD_CERT" uhttpd_cert || return 1
+	backup_target "$UHTTPD_KEY" uhttpd_key || return 1
+
+	stage_nc="$NGINX_CERT.ts-cert-new.$$"
+	stage_nk="$NGINX_KEY.ts-cert-new.$$"
+	stage_uc="$UHTTPD_CERT.ts-cert-new.$$"
+	stage_uk="$UHTTPD_KEY.ts-cert-new.$$"
+	STAGED_FILES="$stage_nc $stage_nk $stage_uc $stage_uk"
+
+	cp "$source_cert" "$stage_nc" && chmod 0644 "$stage_nc" || return 1
+	cp "$source_key" "$stage_nk" && chmod 0600 "$stage_nk" || return 1
+	cp "$source_cert" "$stage_uc" && chmod 0644 "$stage_uc" || return 1
+	cp "$source_key" "$stage_uk" && chmod 0600 "$stage_uk" || return 1
+
+	if ! mv -f "$stage_nc" "$NGINX_CERT" ||
+	   ! mv -f "$stage_nk" "$NGINX_KEY" ||
+	   ! mv -f "$stage_uc" "$UHTTPD_CERT" ||
+	   ! mv -f "$stage_uk" "$UHTTPD_KEY"; then
+		restore_target "$NGINX_CERT" nginx_cert
+		restore_target "$NGINX_KEY" nginx_key
+		restore_target "$UHTTPD_CERT" uhttpd_cert
+		restore_target "$UHTTPD_KEY" uhttpd_key
+		return 1
+	fi
+	STAGED_FILES=
+	sync
+
+	if activate_services; then
+		return 0
+	fi
+
+	log err "certificate activation failed; restoring previous files"
+	restore_target "$NGINX_CERT" nginx_cert
+	restore_target "$NGINX_KEY" nginx_key
+	restore_target "$UHTTPD_CERT" uhttpd_cert
+	restore_target "$UHTTPD_KEY" uhttpd_key
+	sync
+	if [ -x "$NGINX" ]; then
+		"$NGINX" -t >/dev/null 2>&1 && reload_nginx
+	fi
+	service_action uhttpd restart || true
+	return 1
+}
+
+request_certificate() {
+	fqdn="$1"
+	min_hours="$2"
+	min_seconds=$((min_hours * 3600))
+	request_timeout="$(uci_get request_timeout 180)"
+	positive_number "$request_timeout" || request_timeout=180
+	[ "$request_timeout" -le 600 ] 2>/dev/null || request_timeout=180
+	cert_out="$WORK_DIR/cert.pem"
+	key_out="$WORK_DIR/key.pem"
+
+	if command -v timeout >/dev/null 2>&1; then
+		timeout "$request_timeout" "$TAILSCALE" cert \
+			--cert-file="$cert_out" \
+			--key-file="$key_out" \
+			--min-validity="${min_hours}h" \
+			"$fqdn" >/dev/null 2>&1 || return 1
+	else
+		"$TAILSCALE" cert \
+			--cert-file="$cert_out" \
+			--key-file="$key_out" \
+			--min-validity="${min_hours}h" \
+			"$fqdn" >/dev/null 2>&1 || return 1
+	fi
+	chmod 0600 "$key_out" 2>/dev/null
+	pair_valid "$cert_out" "$key_out" "$fqdn" "$min_seconds"
+}
+
+run_once() {
+	force="$1"
+	now="$(now_epoch)"
+	last_success="$(status_value last_success)"
+	last_renewal="$(status_value last_renewal)"
+
+	if [ "$(uci_get enabled 0)" != "1" ]; then
+		save_status disabled "Disabled" "" "" "$now" "$last_success" "$last_renewal" none
+		return 0
+	fi
+
+	if ! acquire_lock; then
+		log notice "certificate check skipped because another run is active"
+		return 75
+	fi
+	trap cleanup EXIT HUP INT TERM
+	WORK_DIR=$(mktemp -d "$TMP_BASE/gl-tailscale-cert.XXXXXX") || return 1
+	chmod 700 "$WORK_DIR"
+
+	if ! require_tools; then
+		save_status error "Required firmware tool or CA bundle missing; check the runtime requirements" "" "" "$now" "$last_success" "$last_renewal" none
+		return 1
+	fi
+
+	save_status checking "Waiting for Tailscale" "" "" "$now" "$last_success" "$last_renewal" checking
+	fqdn=$(discover_fqdn)
+	if [ -z "$fqdn" ]; then
+		save_status waiting "Tailscale isn't ready or didn't return a valid .ts.net hostname" "" "" "$now" "$last_success" "$last_renewal" none
+		return 1
+	fi
+
+	min_hours="$(uci_get min_validity_hours 1440)"
+	positive_number "$min_hours" || min_hours=1440
+	[ "$min_hours" -le 2160 ] 2>/dev/null || min_hours=1440
+	min_seconds=$((min_hours * 3600))
+
+	if [ "$force" != "1" ]; then
+		candidate_cert=
+		candidate_key=
+		if pair_valid "$NGINX_CERT" "$NGINX_KEY" "$fqdn" "$min_seconds"; then
+			candidate_cert="$NGINX_CERT"
+			candidate_key="$NGINX_KEY"
+		elif pair_valid "$UHTTPD_CERT" "$UHTTPD_KEY" "$fqdn" "$min_seconds"; then
+			candidate_cert="$UHTTPD_CERT"
+			candidate_key="$UHTTPD_KEY"
+		fi
+
+		if [ -n "$candidate_cert" ]; then
+			expiry=$(cert_expiry "$candidate_cert")
+			if all_targets_match "$candidate_cert" "$candidate_key"; then
+				save_status valid "Certificate valid" "$fqdn" "$expiry" "$now" "$now" "$last_renewal" none
+				return 0
+			fi
+			install_pair "$candidate_cert" "$candidate_key"
+			install_rc=$?
+			if [ "$install_rc" -eq 0 ] || [ "$install_rc" -eq 2 ]; then
+				save_status valid "Certificate restored on both web interfaces" "$fqdn" "$expiry" "$now" "$now" "$last_renewal" repair
+				log notice "repaired certificate files from an existing valid pair"
+				return 0
+			fi
+			save_status error "Activation failed; previous certificates restored—check the system log" "$fqdn" "$expiry" "$now" "$last_success" "$last_renewal" rollback
+			return 1
+		fi
+	fi
+
+	existing_expiry=
+	if pair_valid "$NGINX_CERT" "$NGINX_KEY" "$fqdn" 0; then
+		existing_expiry=$(cert_expiry "$NGINX_CERT")
+	elif pair_valid "$UHTTPD_CERT" "$UHTTPD_KEY" "$fqdn" 0; then
+		existing_expiry=$(cert_expiry "$UHTTPD_CERT")
+	fi
+
+	save_status renewing "Requesting a Tailscale HTTPS certificate" "$fqdn" "$existing_expiry" "$now" "$last_success" "$last_renewal" request
+	if ! request_certificate "$fqdn" "$min_hours"; then
+		if [ -n "$existing_expiry" ]; then
+			save_status renewal_due "Renewal failed; the current certificate remains active—try again later" "$fqdn" "$existing_expiry" "$now" "$last_success" "$last_renewal" none
+		else
+			save_status error "Request or validation failed; check MagicDNS and HTTPS Certificates in Tailscale" "$fqdn" "" "$now" "$last_success" "$last_renewal" none
+		fi
+		log err "certificate request or validation failed"
+		return 1
+	fi
+
+	new_expiry=$(cert_expiry "$WORK_DIR/cert.pem")
+	install_pair "$WORK_DIR/cert.pem" "$WORK_DIR/key.pem"
+	install_rc=$?
+	if [ "$install_rc" -eq 0 ] || [ "$install_rc" -eq 2 ]; then
+		last_renewal="$now"
+		save_status valid "Certificate renewed" "$fqdn" "$new_expiry" "$now" "$now" "$last_renewal" renewal
+		log notice "certificate renewed and activated"
+		return 0
+	fi
+
+	save_status error "Activation failed; previous certificates restored—check the system log" "$fqdn" "$existing_expiry" "$now" "$last_success" "$last_renewal" rollback
+	return 1
+}
+
+verify_only() {
+	now="$(now_epoch)"
+	last_success="$(status_value last_success)"
+	last_renewal="$(status_value last_renewal)"
+	if ! acquire_lock; then
+		return 75
+	fi
+	trap cleanup EXIT HUP INT TERM
+	WORK_DIR=$(mktemp -d "$TMP_BASE/gl-tailscale-cert.XXXXXX") || return 1
+	require_tools || return 1
+	fqdn=$(discover_fqdn) || return 1
+	if pair_valid "$NGINX_CERT" "$NGINX_KEY" "$fqdn" 0 &&
+	   pair_valid "$UHTTPD_CERT" "$UHTTPD_KEY" "$fqdn" 0 &&
+	   cmp -s "$NGINX_CERT" "$UHTTPD_CERT" && cmp -s "$NGINX_KEY" "$UHTTPD_KEY"; then
+		expiry=$(cert_expiry "$NGINX_CERT")
+		save_status valid "Both web servers have the same valid certificate" "$fqdn" "$expiry" "$now" "$now" "$last_renewal" verify
+		return 0
+	fi
+	save_status error "Certificate verification failed; no files were changed" "$fqdn" "" "$now" "$last_success" "$last_renewal" verify
+	return 1
+}
+
+print_status_json() {
+	state="$(status_value state)"
+	[ -n "$state" ] || state=unknown
+	message="$(status_value message)"
+	fqdn="$(status_value fqdn)"
+	expiry="$(status_value expiry)"
+	last_check="$(status_value last_check)"
+	last_success="$(status_value last_success)"
+	last_renewal="$(status_value last_renewal)"
+	action="$(status_value action)"
+	enabled=false
+	[ "$(uci_get enabled 0)" = "1" ] && enabled=true
+	printf '{"enabled":%s,"state":"%s","message":"%s","fqdn":"%s","expiry":"%s","last_check":%s,"last_success":%s,"last_renewal":%s,"action":"%s","version":"%s"}\n' \
+		"$enabled" "$(json_escape "$state")" "$(json_escape "$message")" \
+		"$(json_escape "$fqdn")" "$(json_escape "$expiry")" \
+		"${last_check:-0}" "${last_success:-0}" "${last_renewal:-0}" \
+		"$(json_escape "$action")" "$(json_escape "$VERSION")"
+}
+
+print_status_text() {
+	printf 'state: %s\n' "$(status_value state)"
+	printf 'message: %s\n' "$(status_value message)"
+	printf 'hostname: %s\n' "$(status_value fqdn)"
+	printf 'expiry: %s\n' "$(status_value expiry)"
+}
+
+certificate_files_signature() {
+	signature_tool=openssl
+	if command -v sha256sum >/dev/null 2>&1; then
+		signature_tool=sha256sum
+	fi
+	for target in "$NGINX_CERT" "$NGINX_KEY" "$UHTTPD_CERT" "$UHTTPD_KEY"; do
+		if [ -f "$target" ]; then
+			if [ "$signature_tool" = sha256sum ]; then
+				sha256sum "$target" 2>/dev/null || printf 'unreadable %s\n' "$target"
+			else
+				"$OPENSSL" dgst -sha256 "$target" 2>/dev/null || printf 'unreadable %s\n' "$target"
+			fi
+		else
+			printf 'missing %s\n' "$target"
+		fi
+	done
+}
+
+watch_interval() {
+	if [ -n "$WATCH_INTERVAL_OVERRIDE" ]; then
+		watch="$WATCH_INTERVAL_OVERRIDE"
+		positive_number "$watch" || watch=1
+	else
+		watch="$(uci_get watch_interval 30)"
+		positive_number "$watch" || watch=30
+		[ "$watch" -ge 15 ] 2>/dev/null || watch=30
+	fi
+	printf '%s\n' "$watch"
+}
+
+wait_for_check_or_change() {
+	total="$1"
+	baseline="$2"
+	[ -n "$baseline" ] || baseline="$(certificate_files_signature)"
+	waited=0
+	watch="$(watch_interval)"
+	while [ "$waited" -lt "$total" ]; do
+		nap="$watch"
+		remaining=$((total - waited))
+		[ "$nap" -le "$remaining" ] 2>/dev/null || nap="$remaining"
+		sleep "$nap" &
+		child=$!
+		wait "$child"
+		child=
+		[ "$(uci_get enabled 0)" = "1" ] || return 0
+		current="$(certificate_files_signature)"
+		if [ "$current" != "$baseline" ]; then
+			log notice "certificate file change detected; scheduling validation"
+			return 0
+		fi
+		waited=$((waited + nap))
+	done
+}
+
+daemon_loop() {
+	child=
+	trap '[ -n "$child" ] && kill "$child" 2>/dev/null; exit 0' HUP INT TERM
+	while :; do
+		if [ "$(uci_get enabled 0)" = "1" ]; then
+			# Snapshot the certificate files before the one-shot runs, not
+			# after it finishes. GL firmware regenerates nginx's certificate
+			# around the same LAN event that triggers this check, so an
+			# overwrite lands while the one-shot is completing. Snapshotting
+			# afterwards absorbs that overwrite into the baseline and the
+			# watcher then waits a full check interval before noticing.
+			# A change the one-shot made itself costs one extra pass, which
+			# finds every file already valid and returns without a request.
+			baseline_signature="$(certificate_files_signature)"
+			"$0" --once &
+			child=$!
+			wait "$child"
+			child=
+			interval="$(uci_get check_interval 43200)"
+			positive_number "$interval" || interval=43200
+			[ "$interval" -ge 3600 ] 2>/dev/null || interval=43200
+			wait_for_check_or_change "$interval" "$baseline_signature"
+		else
+			now="$(now_epoch)"
+		save_status disabled "Disabled" "" "" "$now" "$(status_value last_success)" "$(status_value last_renewal)" none
+			interval=300
+		fi
+		if [ "$(uci_get enabled 0)" != "1" ]; then
+			sleep "$interval" &
+			child=$!
+			wait "$child"
+			child=
+		fi
+	done
+}
+
+case "${1:-}" in
+	--daemon)
+		daemon_loop
+		;;
+	--once)
+		force=0
+		[ "${2:-}" = "--force" ] && force=1
+		run_once "$force"
+		;;
+	--verify)
+		verify_only
+		;;
+	--status)
+		if [ "${2:-}" = "--json" ]; then print_status_json; else print_status_text; fi
+		;;
+	--version)
+		printf '%s\n' "$VERSION"
+		;;
+	*)
+		printf 'Usage: %s --daemon | --once [--force] | --verify | --status [--json] | --version\n' "$0" >&2
+		exit 2
+		;;
+esac

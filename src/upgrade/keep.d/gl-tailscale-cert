@@ -1,0 +1,13 @@
+# gl-tailscale-cert: self-preserving sysupgrade list
+
+/etc/config/ts_cert
+/etc/hotplug.d/iface/90-gl-tailscale-cert
+/etc/init.d/gl-tailscale-cert
+/etc/nginx/gl-conf.d/ts-cert.conf
+/usr/bin/gl-tailscale-cert
+/usr/lib/oui-httpd/rpc/ts-cert
+/usr/libexec/gl-tailscale-cert/
+/usr/share/gl-tailscale-cert/
+/lib/upgrade/keep.d/gl-tailscale-cert
+/etc/rc.d/S99gl-tailscale-cert
+/etc/rc.d/K01gl-tailscale-cert

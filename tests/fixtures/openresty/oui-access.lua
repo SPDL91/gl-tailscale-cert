@@ -1,0 +1,1 @@
+-- Test fixture: production firmware supplies the authenticated OUI access hook.

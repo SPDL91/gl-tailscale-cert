@@ -1,0 +1,5 @@
+/build/
+/node_modules/
+/.pytest_cache/
+npm-debug.log*
+*.swp
