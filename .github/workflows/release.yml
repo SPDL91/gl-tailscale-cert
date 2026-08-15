@@ -1,0 +1,117 @@
+name: release
+
+# Publishing is driven entirely from CI so release artifacts are always built on
+# Linux from a clean checkout. Building from a maintainer's working tree once
+# shipped CRLF line endings in the packaged lifecycle scripts, which made the
+# package fail to install with "not found" and exit 127.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  # Gate the release on the full suite rather than trusting an earlier run.
+  test:
+    uses: ./.github/workflows/test.yml
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve and check the version
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          makefile_version="$(sed -n 's/^PKG_VERSION:=//p' Makefile)"
+          if [ "$tag_version" != "$makefile_version" ]; then
+            echo "tag $GITHUB_REF_NAME implies $tag_version but Makefile says $makefile_version" >&2
+            exit 1
+          fi
+          if ! grep -q "^## ${tag_version} " CHANGELOG.md; then
+            echo "CHANGELOG.md has no '## ${tag_version}' entry" >&2
+            exit 1
+          fi
+          echo "PKG_VERSION=$tag_version" >>"$GITHUB_ENV"
+
+      - name: Build both artifacts
+        run: |
+          sh pkg/build.sh "$PKG_VERSION"
+          docker run --rm -v "$PWD:/repo" -w /repo alpine:edge \
+            sh pkg/build-apk.sh "build/out/gl-tailscale-cert_${PKG_VERSION}_all.ipk" build/out
+          docker run --rm -v "$PWD:/repo:ro" -w /repo alpine:edge \
+            apk verify --allow-untrusted "build/out/gl-tailscale-cert-${PKG_VERSION}.apk"
+
+      - name: Refuse to publish an artifact carrying carriage returns
+        run: |
+          mkdir -p /tmp/audit && cd /tmp/audit
+          tar xzf "$GITHUB_WORKSPACE/build/out/gl-tailscale-cert_${PKG_VERSION}_all.ipk" ./data.tar.gz
+          tar xzf data.tar.gz
+          found=0
+          for file in $(find . -type f ! -name '*.gz'); do
+            if grep -qU $'\r' "$file"; then
+              echo "carriage return in $file" >&2
+              found=1
+            fi
+          done
+          [ "$found" -eq 0 ] || exit 1
+          head -n 1 ./usr/libexec/gl-tailscale-cert/postinst | grep -qx '#!/bin/sh'
+
+      - name: Compose release notes from the changelog
+        run: |
+          {
+            cat <<'INTRO'
+          Tailscale HTTPS certificates for the GL.iNet Admin Panel (nginx) and LuCI (uHTTPd).
+
+          ## Install
+
+          Over SSH on the router:
+
+          ```sh
+          wget -qO install.sh https://raw.githubusercontent.com/SPDL91/gl-tailscale-cert/main/install.sh && sh install.sh
+          ```
+
+          The feature installs **disabled** and does nothing until you enable it.
+
+          ## Changes
+          INTRO
+            awk -v want="## $PKG_VERSION " '
+              index($0, want) == 1 { inside = 1; next }
+              inside && /^## / { exit }
+              inside { print }
+            ' CHANGELOG.md
+            cat <<'REQS'
+          ## Requirements
+
+          - A GL.iNet router on firmware 4.5-4.9 with Tailscale already running
+          - MagicDNS and HTTPS Certificates enabled in the Tailscale admin console
+
+          Requesting the certificate publishes the router's full Tailscale DNS name in public Certificate Transparency logs.
+
+          ## SHA-256
+          REQS
+            printf '\n'
+            for file in "build/out/gl-tailscale-cert_${PKG_VERSION}_all.ipk" \
+                        "build/out/gl-tailscale-cert-${PKG_VERSION}.apk"; do
+              printf -- '- `%s`: `%s`\n' "$(basename "$file")" "$(sha256sum "$file" | cut -d' ' -f1)"
+            done
+          } >/tmp/notes.md
+          cat /tmp/notes.md
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "gl-tailscale-cert $GITHUB_REF_NAME" \
+            --notes-file /tmp/notes.md \
+            "build/out/gl-tailscale-cert_${PKG_VERSION}_all.ipk" \
+            "build/out/gl-tailscale-cert_${PKG_VERSION}_all.ipk.sha256" \
+            "build/out/gl-tailscale-cert-${PKG_VERSION}.apk" \
+            "build/out/gl-tailscale-cert-${PKG_VERSION}.apk.sha256"

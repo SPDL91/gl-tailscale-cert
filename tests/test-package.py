@@ -8,7 +8,23 @@ import tarfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-IPK = ROOT / "build/out/gl-tailscale-cert_0.1.8_all.ipk"
+
+
+def package_version():
+    """Read the version from the Makefile, the single source of truth.
+
+    Hardcoding it here meant a bump could leave this pointing at a filename the
+    build no longer produces. The IPK would then be "missing", every test in
+    this file would skip, and the suite would still report success.
+    """
+    for line in (ROOT / "Makefile").read_text(encoding="utf-8").splitlines():
+        if line.startswith("PKG_VERSION:="):
+            return line.split(":=", 1)[1].strip()
+    raise AssertionError("no PKG_VERSION in Makefile")
+
+
+VERSION = package_version()
+IPK = ROOT / f"build/out/gl-tailscale-cert_{VERSION}_all.ipk"
 
 
 def nested_tar(outer, name):
@@ -61,7 +77,7 @@ class PackageTests(unittest.TestCase):
     def test_control_metadata_and_hooks(self):
         control_text = self.control.extractfile("./control").read().decode()
         self.assertIn("Package: gl-tailscale-cert", control_text)
-        self.assertIn("Version: 0.1.8", control_text)
+        self.assertIn(f"Version: {VERSION}", control_text)
         self.assertIn("ca-bundle", control_text)
         self.assertIn("Architecture: all", control_text)
         self.assertIn("License: GPL-3.0-only", control_text)
@@ -162,7 +178,7 @@ class PackageTests(unittest.TestCase):
         ):
             payload = self.data.extractfile(self.members[name]).read()
             self.assertNotIn(b"{{VERSION}}", payload, name)
-            self.assertIn(b"0.1.8", payload, name)
+            self.assertIn(VERSION.encode(), payload, name)
 
 
 if __name__ == "__main__":
