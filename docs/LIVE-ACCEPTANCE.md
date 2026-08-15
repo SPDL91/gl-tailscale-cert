@@ -4,8 +4,32 @@ Do not run this checklist without explicit approval for the specific router and 
 
 ## Recorded v0.1.8 results
 
-Run on a GL-MT3000, firmware 4.8.1, OpenWrt 21.02-SNAPSHOT, with
-`gl-tailscale-fix` 1.0.21 installed alongside.
+### GL-MT6000, firmware 4.9.1
+
+OpenWrt 21.02-SNAPSHOT, Tailscale 1.102.2, with `gl-tailscale-fix` 1.0.21 and
+AdGuard Home installed alongside.
+
+- Upgraded from v0.1.6 through the one-line installer with no error. All four
+  certificate files stayed byte-identical, so the upgrade made no certificate
+  request. No packaged script contained a carriage return.
+- A controlled invalid replacement of the on-disk nginx certificate and key
+  repaired in 12 seconds from the valid uHTTPd pair. `last_renewal` did not
+  move, so no certificate request occurred. Certificate mode stayed `0644` and
+  key mode `0600`.
+- DNS resolution was sampled every two seconds through the repair window with
+  no failures, and an independent internet probe passed afterwards.
+- After repair, `nginx -t` passed and both the nginx listener on 443 and
+  AdGuard's DNS-over-TLS listener on 853 served the expected certificate.
+- With `gl-tailscale-fix` present, `/gl_home.html` carried each script exactly
+  once, with the ts-fix asset ahead of the ts-cert asset.
+
+AdGuard Home reads `/etc/nginx/nginx.cer` and `/etc/nginx/nginx.key` directly
+for DNS-over-TLS on this device, so it consumes the same files this package
+manages. Repair restores identical content and does not restart AdGuard.
+
+### GL-MT3000, firmware 4.8.1
+
+OpenWrt 21.02-SNAPSHOT, with `gl-tailscale-fix` 1.0.21 installed alongside.
 
 - The one-line installer resolved the release, verified its SHA-256, and
   upgraded the package with no error. All four certificate files stayed
@@ -17,9 +41,12 @@ Run on a GL-MT3000, firmware 4.8.1, OpenWrt 21.02-SNAPSHOT, with
 - After repair, `nginx -t` passed and the TLS listener served the expected
   Let's Encrypt certificate for the router's Tailscale name.
 
-v0.1.7 failed acceptance on the same device and was withdrawn: its lifecycle
-scripts shipped with CRLF endings, so `opkg install` reported the postinst as
-"not found" with exit 127. See the 0.1.8 entry in `CHANGELOG.md`.
+v0.1.7 failed acceptance on the MT3000 and was withdrawn: its lifecycle scripts
+shipped with CRLF endings, so `opkg install` reported the postinst as "not
+found" with exit 127. See the 0.1.8 entry in `CHANGELOG.md`.
+
+Reboot, sysupgrade, apk-tools, and package-order removal checks remain
+unverified for v0.1.8 on both devices.
 
 ## Recorded v0.1.6 results
 
