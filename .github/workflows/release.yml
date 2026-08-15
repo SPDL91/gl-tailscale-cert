@@ -66,17 +66,15 @@ jobs:
         run: |
           {
             cat <<'INTRO'
-          Tailscale HTTPS certificates for the GL.iNet Admin Panel (nginx) and LuCI (uHTTPd).
-
           ## Install
 
-          Over SSH on the router:
+          On the router:
 
           ```sh
           wget -qO install.sh https://raw.githubusercontent.com/SPDL91/gl-tailscale-cert/main/install.sh && sh install.sh
           ```
 
-          The feature installs **disabled** and does nothing until you enable it.
+          Installs disabled. See the [README](https://github.com/SPDL91/gl-tailscale-cert#readme) for requirements and how to enable it.
 
           ## Changes
           INTRO
@@ -85,17 +83,7 @@ jobs:
               inside && /^## / { exit }
               inside { print }
             ' CHANGELOG.md
-            cat <<'REQS'
-          ## Requirements
-
-          - A GL.iNet router on firmware 4.5-4.9 with Tailscale already running
-          - MagicDNS and HTTPS Certificates enabled in the Tailscale admin console
-
-          Requesting the certificate publishes the router's full Tailscale DNS name in public Certificate Transparency logs.
-
-          ## SHA-256
-          REQS
-            printf '\n'
+            printf '## SHA-256\n\n'
             for file in "build/out/gl-tailscale-cert_${PKG_VERSION}_all.ipk" \
                         "build/out/gl-tailscale-cert-${PKG_VERSION}.apk"; do
               printf -- '- `%s`: `%s`\n' "$(basename "$file")" "$(sha256sum "$file" | cut -d' ' -f1)"
