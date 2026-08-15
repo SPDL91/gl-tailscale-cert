@@ -20,6 +20,11 @@ The feature starts disabled. Nothing happens until you enable it.
 Requesting the certificate publishes the router's full Tailscale DNS name in
 public Certificate Transparency logs.
 
+If AdGuard Home serves DNS-over-TLS from `/etc/nginx/nginx.cer`, use AdGuard
+0.107.72 or later. It watches that file and reloads after a renewal. Earlier
+versions read the certificate once at startup and keep serving the previous one
+until they restart.
+
 For tested models, firmware tiers, and the full dependency list, see
 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
 
