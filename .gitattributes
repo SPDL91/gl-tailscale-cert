@@ -12,3 +12,6 @@ src/hotplug/iface/* text eol=lf
 src/scripts/* text eol=lf
 src/rpc/* text eol=lf
 src/upgrade/keep.d/* text eol=lf
+src/lifecycle/* text eol=lf
+src/config/* text eol=lf
+src/nginx/* text eol=lf
