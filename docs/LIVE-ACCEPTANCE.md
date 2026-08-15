@@ -2,11 +2,24 @@
 
 Do not run this checklist without explicit approval for the specific router and package artifact.
 
-## Pending v0.1.7 acceptance
+## Recorded v0.1.8 results
 
-v0.1.7 changes when the daemon samples the certificate files. Re-run the
-recovery and coexistence checks below on a router before treating the watcher
-timing as verified; the v0.1.6 results that follow predate that change.
+Run on a GL-MT3000, firmware 4.8.1, OpenWrt 21.02-SNAPSHOT, with
+`gl-tailscale-fix` 1.0.21 installed alongside.
+
+- The one-line installer resolved the release, verified its SHA-256, and
+  upgraded the package with no error. All four certificate files stayed
+  byte-identical, so the upgrade made no certificate request.
+- A controlled invalid replacement of the on-disk nginx certificate and key
+  repaired in 34 seconds, consistent with the 30-second watch interval. The
+  worker reused the valid uHTTPd pair; `last_renewal` did not move, so no
+  certificate request occurred.
+- After repair, `nginx -t` passed and the TLS listener served the expected
+  Let's Encrypt certificate for the router's Tailscale name.
+
+v0.1.7 failed acceptance on the same device and was withdrawn: its lifecycle
+scripts shipped with CRLF endings, so `opkg install` reported the postinst as
+"not found" with exit 127. See the 0.1.8 entry in `CHANGELOG.md`.
 
 ## Recorded v0.1.6 results
 
