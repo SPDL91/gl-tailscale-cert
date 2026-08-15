@@ -10,7 +10,8 @@ echo "ok - packaged Lua parses"
 
 mkdir -p /usr/share/gl-tailscale-cert/www /usr/share/gl-ngx /usr/share/ts-fix /tmp/logs
 cp /repo/src/nginx/ui-header-filter.lua /usr/share/gl-tailscale-cert/ui-header-filter.lua
-sed 's/{{VERSION}}/0.1.8/g' /repo/src/nginx/ui-dispatch-filter.lua >/usr/share/gl-tailscale-cert/ui-dispatch-filter.lua
+VERSION=$(sed -n 's/^PKG_VERSION:=//p' /repo/Makefile)
+sed "s/{{VERSION}}/$VERSION/g" /repo/src/nginx/ui-dispatch-filter.lua >/usr/share/gl-tailscale-cert/ui-dispatch-filter.lua
 cp /repo/src/www/ts-cert.js /usr/share/gl-tailscale-cert/www/ts-cert.js
 cp /repo/tests/fixtures/openresty/oui-access.lua /usr/share/gl-ngx/oui-access.lua
 printf 'fixture' >/usr/share/ts-fix/ts-fix.js
