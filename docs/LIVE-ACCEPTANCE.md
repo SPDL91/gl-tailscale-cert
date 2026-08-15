@@ -25,7 +25,10 @@ AdGuard Home installed alongside.
 
 AdGuard Home reads `/etc/nginx/nginx.cer` and `/etc/nginx/nginx.key` directly
 for DNS-over-TLS on this device, so it consumes the same files this package
-manages. Repair restores identical content and does not restart AdGuard.
+manages. AdGuard 0.107.72 and later watch those files and reload after a
+change, so a renewal reaches the DNS-over-TLS listener without help. Earlier
+versions load the certificate once at startup and keep serving the previous one
+until they restart. The device carried 0.107.73.
 
 ### GL-MT3000, firmware 4.8.1
 
@@ -40,13 +43,29 @@ OpenWrt 21.02-SNAPSHOT, with `gl-tailscale-fix` 1.0.21 installed alongside.
   certificate request occurred.
 - After repair, `nginx -t` passed and the TLS listener served the expected
   Let's Encrypt certificate for the router's Tailscale name.
+- A reboot brought the procd service back through its `S99` link, reached
+  `valid`, left all four files byte-identical, and made no certificate request.
+- All four package transaction orders passed, with `nginx -t` clean after each:
+
+  | Transaction | Result |
+  |---|---|
+  | Remove this package, keep ts-fix | Certificate files left in place, ts-fix files untouched, only the ts-fix script injected |
+  | Reinstall it with ts-fix present | Saved config restored, both scripts injected once, ts-fix first |
+  | Remove ts-fix, keep this package | This package unaffected, only its own script injected, its asset still served |
+  | Reinstall ts-fix over this package | Both scripts injected once, ts-fix first |
+
+  `last_renewal` stayed at zero throughout, so no transaction triggered a
+  certificate request. Download the ts-fix package and verify its checksum
+  before removing it, so reinstalling does not depend on network access later.
 
 v0.1.7 failed acceptance on the MT3000 and was withdrawn: its lifecycle scripts
 shipped with CRLF endings, so `opkg install` reported the postinst as "not
 found" with exit 127. See the 0.1.8 entry in `CHANGELOG.md`.
 
-Reboot, sysupgrade, apk-tools, and package-order removal checks remain
-unverified for v0.1.8 on both devices.
+Sysupgrade persistence and the apk-tools path remain unverified for v0.1.8.
+Sysupgrade needs a firmware flash that is not worth performing for this package
+alone, and apk-tools needs an OpenWrt 25.12 device. Reboot and package-order
+checks ran on the MT3000 only.
 
 ## Recorded v0.1.6 results
 
