@@ -2,7 +2,12 @@
 
 ## Unreleased
 
+## 0.1.9 - 2026-08-22
+
 - Report the actual feature state after installing. The installer always said the feature starts disabled, which misread an install over a preserved `enabled='1'` config, such as after a firmware upgrade.
+- Simplify WebUI placement by relying on its existing DOM observer instead of three delayed retries and periodic reinsertion.
+- Remove the unused panel collapse control, custom update event, RPC fields, worker metadata, helper, and literal-only dispatcher test.
+- Keep the live-device checklist while removing recorded acceptance-session results already preserved in repository history.
 
 ## 0.1.8 - 2026-08-15
 

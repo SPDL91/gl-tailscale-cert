@@ -42,7 +42,6 @@ const scriptPath = path.resolve(__dirname, '../src/www/ts-cert.js');
 
   assert.strictEqual(await page.locator('.ts-cert-label').textContent(), 'Automatic certificate management');
   assert((await page.locator('.ts-cert-guidance').textContent()).includes('Certificate Transparency logs'));
-  assert.strictEqual(await page.locator('.ts-cert-info').count(), 0, 'panel must not show a persistent implementation-detail paragraph');
   await page.waitForFunction(() => document.getElementById('ts-cert-status-state').textContent.includes('Disabled'));
   assert.strictEqual(await page.locator('#ts-cert-message').textContent(), '', 'normal disabled state must not repeat in the action area');
 

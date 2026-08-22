@@ -48,8 +48,6 @@ function M.get_config()
     local c = uci.cursor()
     local result = worker_status()
     result.enabled = c:get(CONFIG, SECTION, "enabled") == "1"
-    result.check_interval = tonumber(c:get(CONFIG, SECTION, "check_interval")) or 43200
-    result.min_validity_hours = tonumber(c:get(CONFIG, SECTION, "min_validity_hours")) or 1440
     return result
 end
 

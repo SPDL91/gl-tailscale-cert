@@ -89,7 +89,6 @@ save_status() {
 		printf 'last_success=%s\n' "$last_success"
 		printf 'last_renewal=%s\n' "$last_renewal"
 		printf 'action=%s\n' "$action"
-		printf 'version=%s\n' "$VERSION"
 	} >"$tmp_status" || return 1
 	chmod 600 "$tmp_status" 2>/dev/null
 	mv -f "$tmp_status" "$STATUS_FILE"
@@ -120,11 +119,6 @@ positive_number() {
 
 now_epoch() {
 	date +%s
-}
-
-file_epoch() {
-	[ -f "$1" ] || return 0
-	stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || true
 }
 
 cleanup() {
