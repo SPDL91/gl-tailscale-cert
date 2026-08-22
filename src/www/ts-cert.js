@@ -8,11 +8,9 @@
 var ROUTE = '#/tailscaleview';
 var SECTION_ID = 'ts-cert-section';
 var STYLE_ID = 'ts-cert-styles';
-var STORAGE_KEY = 'ts-cert-panel-collapsed';
 var VERSION = '{{VERSION}}';
 var refreshTimer = null;
 var renewTimer = null;
-var routeTimers = [];
 var observer = null;
 var busy = false;
 
@@ -40,10 +38,6 @@ function onRoute() {
 
 function safeStorageGet(key) {
   try { return localStorage.getItem(key); } catch (error) { return null; }
-}
-
-function safeStorageSet(key, value) {
-  try { localStorage.setItem(key, value); } catch (error) {}
 }
 
 function injectStyles() {
@@ -81,8 +75,6 @@ function injectStyles() {
     '.ts-cert-button:hover:not(:disabled){background:#2f7cf6;color:#fff}',
     '.ts-cert-button:disabled{opacity:.45;cursor:not-allowed}',
     '.ts-cert-message{font-size:12px;min-height:18px;opacity:.8}',
-    '.ts-cert-collapse{border:0;background:transparent;color:inherit;cursor:pointer;font-size:18px;line-height:1}',
-    '.ts-cert-collapsed .ts-cert-body{display:none}',
     '@media(max-width:560px){.ts-cert-status{grid-template-columns:1fr}.ts-cert-status dt{margin-top:4px}}'
   ].join('');
   document.head.appendChild(style);
@@ -111,12 +103,7 @@ function buildSection() {
   var heading = element('div', 'ts-cert-heading');
   var title = element('div', '', 'Tailscale HTTPS certificate');
   title.appendChild(element('div', 'ts-cert-version', 'gl-tailscale-cert v' + VERSION));
-  var collapse = element('button', 'ts-cert-collapse', '⌃');
-  collapse.id = 'ts-cert-collapse';
-  collapse.type = 'button';
-  collapse.setAttribute('aria-label', 'Collapse certificate panel');
   heading.appendChild(title);
-  heading.appendChild(collapse);
 
   var body = element('div', 'ts-cert-body');
   var toggleRow = element('div', 'ts-cert-row');
@@ -154,17 +141,6 @@ function buildSection() {
   card.appendChild(heading);
   card.appendChild(body);
   section.appendChild(card);
-
-  var collapsed = safeStorageGet(STORAGE_KEY) === '1';
-  if (collapsed) section.classList.add('ts-cert-collapsed');
-  collapse.textContent = collapsed ? '⌄' : '⌃';
-  collapse.addEventListener('click', function() {
-    collapsed = !collapsed;
-    section.classList.toggle('ts-cert-collapsed', collapsed);
-    collapse.textContent = collapsed ? '⌄' : '⌃';
-    collapse.setAttribute('aria-label', collapsed ? 'Expand certificate panel' : 'Collapse certificate panel');
-    safeStorageSet(STORAGE_KEY, collapsed ? '1' : '0');
-  });
 
   toggle.addEventListener('click', function() {
     if (busy) return;
@@ -235,9 +211,6 @@ function render(data) {
   setMessage(showMessage ? (data.message || '') : '');
   document.getElementById('ts-cert-renew').disabled = busy || !enabled;
   toggle.disabled = busy;
-  try {
-    window.dispatchEvent(new CustomEvent('ts-cert:updated', {detail: {state: state, enabled: enabled}}));
-  } catch (error) {}
 }
 
 function setBusy(value, message) {
@@ -262,8 +235,7 @@ function refresh() {
 }
 
 function scheduleRefresh(delay) {
-  var timer = setTimeout(refresh, delay);
-  routeTimers.push(timer);
+  setTimeout(refresh, delay);
 }
 
 function pollRenewal(attempt) {
@@ -310,25 +282,16 @@ function placeSection() {
   if (changed) refresh();
 }
 
-function clearRouteTimers() {
-  routeTimers.forEach(clearTimeout);
-  routeTimers = [];
-  if (renewTimer) { clearTimeout(renewTimer); renewTimer = null; }
-}
-
 function startRefresh() {
   if (refreshTimer) return;
   refreshTimer = setInterval(function() {
-    if (onRoute()) {
-      placeSection();
-      refresh();
-    }
+    if (onRoute()) refresh();
   }, 15000);
 }
 
 function stopRefresh() {
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
-  clearRouteTimers();
+  if (renewTimer) { clearTimeout(renewTimer); renewTimer = null; }
 }
 
 function routeChanged() {
@@ -336,10 +299,7 @@ function routeChanged() {
     stopRefresh();
     return;
   }
-  [250, 700, 1400].forEach(function(delay) {
-    var timer = setTimeout(placeSection, delay);
-    routeTimers.push(timer);
-  });
+  placeSection();
   startRefresh();
 }
 

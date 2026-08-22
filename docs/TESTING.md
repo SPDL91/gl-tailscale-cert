@@ -2,7 +2,7 @@
 
 ## Local suites
 
-The repository test entry point runs backend, LAN-recovery, lifecycle, dispatcher-contract, and IPK-content tests:
+The repository test entry point runs backend, LAN-recovery, lifecycle, and IPK-content tests:
 
 ```sh
 sh tests/run.sh
@@ -46,7 +46,7 @@ docker run --rm --entrypoint /bin/ash \
 | ts-fix only | 1 | 0 |
 | Both | 1 | 1 |
 
-The dispatcher unit test covers only static contracts: the exact-location filter pair in `ts-cert.conf` and the upstream adapter contract. All injection behaviour is verified against real OpenResty above, never against a re-modelled copy of the filter. The compatibility fixture is the v1.0.21/current-main filter contract at upstream commit `d86da698e17ece6b52ba1789ee27b02f7313692f`.
+The compatibility fixture preserves the v1.0.21/current-main filter behavior from upstream commit `d86da698e17ece6b52ba1789ee27b02f7313692f`.
 
 ## Lifecycle order coverage
 
